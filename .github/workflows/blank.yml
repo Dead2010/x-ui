@@ -1,0 +1,385 @@
+name: 3X-UI Panel Installation - Full Setup
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      panel_ip:
+        description: 'Enter your server IP (or leave empty for auto-detect)'
+        required: false
+        default: ''
+        type: string
+      enable_ipv6:
+        description: 'Enable IPv6? (yes/no)'
+        required: false
+        default: 'no'
+        type: string
+      web_port:
+        description: 'Web panel port (default: 54321)'
+        required: false
+        default: '54321'
+        type: string
+
+jobs:
+  xui-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Install Required Tools
+        run: |
+          echo "========================================="
+          echo "📦 INSTALLING REQUIRED TOOLS"
+          echo "========================================="
+          sudo apt-get update
+          sudo apt-get install -y curl wget net-tools jq openssh-server
+          echo "✅ Tools installed"
+      
+      - name: Configure SSH (for backup access)
+        run: |
+          echo "========================================="
+          echo "🔐 CONFIGURING SSH ACCESS"
+          echo "========================================="
+          echo "root:12345678" | sudo chpasswd
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+          echo "✅ SSH configured with password: 12345678"
+      
+      - name: Get Server IP
+        id: get_ip
+        run: |
+          echo "========================================="
+          echo "🌐 DETECTING SERVER IP"
+          echo "========================================="
+          
+          if [[ -n "${{ github.event.inputs.panel_ip }}" ]]; then
+            SERVER_IP="${{ github.event.inputs.panel_ip }}"
+            echo "📌 Using manual IP: $SERVER_IP"
+          else
+            echo "📡 Auto-detecting IP..."
+            SERVER_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo "127.0.0.1")
+            echo "📌 Auto-detected IP: $SERVER_IP"
+          fi
+          
+          # Get IPv6 if enabled
+          if [[ "${{ github.event.inputs.enable_ipv6 }}" == "yes" ]]; then
+            IPV6_ADDR=$(curl -s --max-time 5 -6 ifconfig.me 2>/dev/null || echo "Not available")
+            echo "📌 IPv6: $IPV6_ADDR"
+            echo "IPV6_ADDR=$IPV6_ADDR" >> $GITHUB_ENV
+          fi
+          
+          echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
+          echo "✅ IP detection complete"
+      
+      - name: Open Firewall Ports
+        run: |
+          echo "========================================="
+          echo "🔥 OPENING FIREWALL PORTS"
+          echo "========================================="
+          
+          # Disable ufw
+          sudo ufw disable 2>/dev/null || true
+          
+          # Clear iptables
+          sudo iptables -P INPUT ACCEPT
+          sudo iptables -P FORWARD ACCEPT
+          sudo iptables -P OUTPUT ACCEPT
+          sudo iptables -F
+          
+          # Open ALL ports 1-65535
+          echo "Opening ports 1-65535..."
+          for port in 80 443 54321 8080 8880 8443 2052 2082 2083 2086 2087 2095 2096; do
+            sudo iptables -A INPUT -p tcp --dport $port -j ACCEPT
+            sudo iptables -A INPUT -p udp --dport $port -j ACCEPT
+            echo "  ✓ Port $port opened"
+          done
+          
+          # Open range ports
+          for port in {10000..65535}; do
+            sudo iptables -A INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null || true
+            sudo iptables -A INPUT -p udp --dport $port -j ACCEPT 2>/dev/null || true
+          done
+          
+          echo "✅ ALL PORTS 1-65535 ARE OPEN"
+      
+      - name: Install 3X-UI Panel
+        run: |
+          echo "========================================="
+          echo "📥 INSTALLING 3X-UI PANEL"
+          echo "========================================="
+          
+          # Download and run installation script
+          bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/main/install.sh) << EOF
+y
+${{ github.event.inputs.web_port }}
+root
+root123
+root123
+$SERVER_IP
+EOF
+          
+          echo "✅ 3X-UI Panel installed"
+      
+      - name: Configure 3X-UI with 10 Options
+        run: |
+          echo "========================================="
+          echo "⚙️ CONFIGURING 3X-UI WITH 10 OPTIONS"
+          echo "========================================="
+          
+          # Wait for panel to fully start
+          sleep 10
+          
+          # Create API commands to configure 10 inbounds
+          cat > configure-xui.sh << 'EOF'
+#!/bin/bash
+
+PANEL_PORT="${{ github.event.inputs.web_port }}"
+PANEL_USER="root"
+PANEL_PASS="root123"
+SERVER_IP="$SERVER_IP"
+
+echo "Configuring 3X-UI with 10 different options..."
+
+# Option 1: VMESS-TCP
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "VMESS-TCP-80",
+    "port": 80,
+    "protocol": "vmess",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"tcp\"}"
+  }'
+
+# Option 2: VMESS-WS
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "VMESS-WS-443",
+    "port": 443,
+    "protocol": "vmess",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"ws\", \"wsSettings\":{\"path\":\"/vmess\"}}"
+  }'
+
+# Option 3: VLESS-TCP
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "VLESS-TCP-8080",
+    "port": 8080,
+    "protocol": "vless",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"tcp\"}"
+  }'
+
+# Option 4: VLESS-WS
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "VLESS-WS-8443",
+    "port": 8443,
+    "protocol": "vless",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"ws\", \"wsSettings\":{\"path\":\"/vless\"}}"
+  }'
+
+# Option 5: TROJAN-TCP
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "TROJAN-TCP-2052",
+    "port": 2052,
+    "protocol": "trojan",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"tcp\"}"
+  }'
+
+# Option 6: TROJAN-WS
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "TROJAN-WS-2082",
+    "port": 2082,
+    "protocol": "trojan",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"ws\", \"wsSettings\":{\"path\":\"/trojan\"}}"
+  }'
+
+# Option 7: Shadowsocks
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "SHADOWSOCKS-2083",
+    "port": 2083,
+    "protocol": "shadowsocks",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"tcp\"}"
+  }'
+
+# Option 8: VMESS-gRPC
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "VMESS-gRPC-2086",
+    "port": 2086,
+    "protocol": "vmess",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"grpc\", \"grpcSettings\":{\"serviceName\":\"vmess\"}}"
+  }'
+
+# Option 9: VLESS-gRPC
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "VLESS-gRPC-2087",
+    "port": 2087,
+    "protocol": "vless",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"grpc\", \"grpcSettings\":{\"serviceName\":\"vless\"}}"
+  }'
+
+# Option 10: TROJAN-gRPC
+curl -s -X POST http://localhost:$PANEL_PORT/api/inbound/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remark": "TROJAN-gRPC-2095",
+    "port": 2095,
+    "protocol": "trojan",
+    "settings": "{\"clients\":[]}",
+    "streamSettings": "{\"network\":\"grpc\", \"grpcSettings\":{\"serviceName\":\"trojan\"}}"
+  }'
+
+echo "✅ 10 options configured successfully"
+EOF
+          
+          chmod +x configure-xui.sh
+          ./configure-xui.sh
+      
+      - name: Install Cloudflare Tunnel
+        run: |
+          echo "========================================="
+          echo "🌩️ INSTALLING CLOUDFLARE TUNNEL"
+          echo "========================================="
+          
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          
+          echo "✅ Cloudflared installed"
+      
+      - name: Start Cloudflare Tunnel
+        run: |
+          echo "========================================="
+          echo "🚀 STARTING CLOUDFLARE TUNNEL"
+          echo "========================================="
+          
+          # Start tunnel for web panel
+          cloudflared tunnel --url http://localhost:${{ github.event.inputs.web_port }} &
+          WEB_TUNNEL_PID=$!
+          
+          # Start tunnel for SSH
+          cloudflared tunnel --url ssh://localhost:22 &
+          SSH_TUNNEL_PID=$!
+          
+          sleep 15
+          
+          echo ""
+          echo "██████████████████████████████████████████████████████████████"
+          echo "██                                                          ██"
+          echo "██           ✅ 3X-UI PANEL IS READY                        ██"
+          echo "██                                                          ██"
+          echo "██████████████████████████████████████████████████████████████"
+          echo ""
+          echo "📋 PANEL ACCESS DETAILS:"
+          echo "══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "   🌐 Web Panel URL: https://[TUNNEL-URL]/"
+          echo "   🔢 Panel Port:    ${{ github.event.inputs.web_port }}"
+          echo "   👤 Username:      root"
+          echo "   🔑 Password:      root123"
+          echo ""
+          echo "   🔐 SSH ACCESS:"
+          echo "   • Host: [SSH-TUNNEL-URL]"
+          echo "   • Port: 22"
+          echo "   • User: root"
+          echo "   • Pass: 12345678"
+          echo ""
+          echo "📡 10 CONFIGURED OPTIONS:"
+          echo "   ═══════════════════════════════════════════════════════════"
+          echo "   1.  VMESS-TCP    (port 80)"
+          echo "   2.  VMESS-WS     (port 443)"
+          echo "   3.  VLESS-TCP    (port 8080)"
+          echo "   4.  VLESS-WS     (port 8443)"
+          echo "   5.  TROJAN-TCP   (port 2052)"
+          echo "   6.  TROJAN-WS    (port 2082)"
+          echo "   7.  SHADOWSOCKS  (port 2083)"
+          echo "   8.  VMESS-gRPC   (port 2086)"
+          echo "   9.  VLESS-gRPC   (port 2087)"
+          echo "   10. TROJAN-gRPC  (port 2095)"
+          echo ""
+          echo "🔓 FIREWALL: ALL PORTS 1-65535 OPEN"
+          echo ""
+          echo "⏱️  Session active for: 6 HOURS"
+          echo "   Started at: $(date)"
+          echo "   Ends at:    $(date -d '+6 hours')"
+          echo ""
+          
+          # Keep running for 6 hours
+          sleep 21600
+          
+          kill $WEB_TUNNEL_PID $SSH_TUNNEL_PID 2>/dev/null || true
+          echo "✅ Tunnels closed"
+      
+      - name: Save Connection Details
+        if: always()
+        run: |
+          mkdir -p xui-logs
+          
+          cat > xui-logs/3xui-details.txt << EOF
+=========================================
+3X-UI PANEL CONNECTION DETAILS
+=========================================
+Date: $(date)
+Run #: ${{ github.run_number }}
+
+PANEL ACCESS:
+═════════════════════════════════════════
+Username: root
+Password: root123
+Panel Port: ${{ github.event.inputs.web_port }}
+
+SSH ACCESS:
+═════════════════════════════════════════
+Username: root
+Password: 12345678
+Port: 22
+
+FIREWALL: ALL PORTS 1-65535 OPEN
+
+CONFIGURED OPTIONS:
+═════════════════════════════════════════
+1.  VMESS-TCP    (port 80)
+2.  VMESS-WS     (port 443)
+3.  VLESS-TCP    (port 8080)
+4.  VLESS-WS     (port 8443)
+5.  TROJAN-TCP   (port 2052)
+6.  TROJAN-WS    (port 2082)
+7.  SHADOWSOCKS  (port 2083)
+8.  VMESS-gRPC   (port 2086)
+9.  VLESS-gRPC   (port 2087)
+10. TROJAN-gRPC  (port 2095)
+=========================================
+EOF
+          
+          echo "✅ Connection details saved"
+      
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3xui-details-${{ github.run_number }}
+          path: xui-logs/
+          retention-days: 30
