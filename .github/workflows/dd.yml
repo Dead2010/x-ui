@@ -1,0 +1,95 @@
+name: DigitalOcean Termius Tunnel
+
+on:
+  workflow_dispatch:  # Manual trigger only
+  # schedule:
+  #   - cron: '0 */12 * * *'  # Optional: every 12 hours
+
+jobs:
+  setup-termius-tunnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720  # 12 hours max
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH and Tools
+        run: |
+          # Update and install packages
+          sudo apt-get update
+          sudo apt-get install -y openssh-server sshpass curl net-tools
+
+          # Configure SSH for password authentication
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#Port 22/Port 22/' /etc/ssh/sshd_config
+          
+          # Set password for runner user
+          echo "runner:digital12345" | sudo chpasswd
+          
+          # Restart SSH service
+          sudo systemctl restart ssh
+          sudo systemctl status ssh --no-pager
+
+      - name: Install Bore Tunnel
+        run: |
+          # Install Rust and bore
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          cargo install bore-cli
+          
+          # Verify installation
+          ~/.cargo/bin/bore --version || echo "Bore installed"
+
+      - name: Start Bore Tunnel
+        run: |
+          # Start bore tunnel in background
+          ~/.cargo/bin/bore local 22 --to bore.pub > bore_output.txt 2>&1 &
+          
+          # Wait for tunnel to establish
+          sleep 15
+          
+          # Extract port number
+          PORT=$(grep -o ':[0-9]*' bore_output.txt | grep -o '[0-9]*' | head -1)
+          
+          # Get public IP (optional)
+          PUBLIC_IP=$(curl -s ifconfig.me)
+          
+          # Create info file
+          cat > termius_info.txt << EOF
+=========================================
+📱 TERMIUS CONNECTION DETAILS
+=========================================
+Server: bore.pub
+Port: $PORT
+Username: runner
+Password: digital12345
+=========================================
+SSH Command: ssh -p $PORT runner@bore.pub
+=========================================
+Tunnel active until: $(date -d "+12 hours")
+=========================================
+EOF
+          
+          # Display connection info
+          cat termius_info.txt
+          
+          # Save port for artifact
+          echo $PORT > port.txt
+          
+          # Keep tunnel alive for 12 hours
+          echo "Tunnel running on bore.pub:$PORT"
+          echo "Press Ctrl+C to stop tunnel"
+          
+          # Keep script running
+          sleep 43200  # 12 hours
+
+      - name: Upload Connection Info
+        uses: actions/upload-artifact@v4
+        with:
+          name: termius-connection
+          path: |
+            termius_info.txt
+            port.txt
+          retention-days: 1
