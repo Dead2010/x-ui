@@ -1,4 +1,4 @@
-name: DigitalOcean VPS Termius Tunnel
+name: Termius Simple Tunnel
 
 on:
   workflow_dispatch:
@@ -6,48 +6,42 @@ on:
     - cron: '0 */6 * * *'
 
 jobs:
-  setup-tunnel:
+  tunnel:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
-      - name: Install Required Tools
+      - name: Install SSH and Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server sshpass curl net-tools
-          
-      - name: Configure SSH
-        run: |
-          # Configure SSH for password auth
-          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          
-          # Set password for runner
-          echo "runner:Docean2024!" | sudo chpasswd
-          
-          # Restart SSH
+          sudo apt-get install -y openssh-server sshpass curl wget net-tools
+          echo "runner:simple123" | sudo chpasswd
           sudo systemctl restart ssh
-          
-      - name: Install Bore Tunnel
+      
+      - name: Install Bore via Cargo (Working Method)
         run: |
-          # Download bore binary directly (no Rust needed)
-          wget -q https://github.com/ekristen/bore/releases/download/v0.5.0/bore-v0.5.0-linux-amd64
-          chmod +x bore-v0.5.0-linux-amd64
-          sudo mv bore-v0.5.0-linux-amd64 /usr/local/bin/bore
+          # Install Rust and Cargo
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source "$HOME/.cargo/env"
           
-      - name: Start Tunnel and Display Info
+          # Install bore-cli
+          cargo install bore-cli
+          
+          # Verify installation
+          echo "Bore installed successfully"
+      
+      - name: Start Tunnel
         run: |
-          # Start tunnel in background
-          bore local 22 --to bore.pub > tunnel.log 2>&1 &
+          source "$HOME/.cargo/env"
+          
+          # Start bore tunnel
+          ~/.cargo/bin/bore local 22 --to bore.pub > bore.log 2>&1 &
           
           # Wait for tunnel to establish
           sleep 10
           
           # Extract port number
-          PORT=$(grep -o ':[0-9]*' tunnel.log | grep -o '[0-9]*' | head -1)
-          
-          # Save port to file
-          echo $PORT > port.txt
+          PORT=$(grep -o ':[0-9]*' bore.log | grep -o '[0-9]*' | tail -1)
           
           # Display connection info
           echo "========================================="
@@ -56,18 +50,20 @@ jobs:
           echo "Host: bore.pub"
           echo "Port: $PORT"
           echo "User: runner"
-          echo "Pass: Docean2024!"
+          echo "Pass: simple123"
           echo "========================================="
-          echo "Save these details to connect from Termius"
+          echo "Add these exact values to Termius"
           echo ""
           echo "⏱️  Tunnel active for 6 hours"
           
+          # Save port
+          echo "$PORT" > port.txt
+          
           # Keep tunnel alive
           sleep 21600
-          
-      - name: Upload Port Information
+      
+      - name: Upload Port Info
         uses: actions/upload-artifact@v4
         with:
-          name: termius-connection
+          name: termius-port
           path: port.txt
-          retention-days: 1
